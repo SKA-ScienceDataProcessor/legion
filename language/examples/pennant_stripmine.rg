@@ -1340,7 +1340,7 @@ do
 
   var time = 0.0
   var cycle : int64 = 0
-  var dt = dtinit -- dtmax
+  var dt = dtmax
   var dthydro = dtmax
 
   var npieces = conf.npieces
@@ -1348,23 +1348,22 @@ do
   var nspans_points = conf.nspans_points
 
   __demand(__spmd)
-  for cycle = 0, cstop do
-  -- while continue_simulation(warmup, cycle, cstop, time, tstop) do
-  --   if warmup and cycle > 0 then
-  --     wait_for(dthydro)
-  --     enable = true
-  --     warmup = false
-  --     time = 0.0
-  --     cycle = 0
-  --     dt = dtmax
-  --     dthydro = dtmax
-  --     start_time = c.legion_get_current_time_in_micros()/1.e6
-  --     last_time = start_time
-  --   end
+  while continue_simulation(warmup, cycle, cstop, time, tstop) do
+    -- if warmup and cycle > 0 then
+    --   wait_for(dthydro)
+    --   enable = true
+    --   warmup = false
+    --   time = 0.0
+    --   cycle = 0
+    --   dt = dtmax
+    --   dthydro = dtmax
+    --   start_time = c.legion_get_current_time_in_micros()/1.e6
+    --   last_time = start_time
+    -- end
 
     -- c.legion_runtime_begin_trace(__runtime(), __context(), 0)
 
-    -- dt = calc_global_dt(dt, dtfac, dtinit, dtmax, dthydro, time, tstop, cycle)
+    dt = calc_global_dt(dt, dtfac, dtinit, dtmax, dthydro, time, tstop, cycle)
 
     -- if cycle > 0 and cycle % interval == 0 then
     --   var current_time = c.legion_get_current_time_in_micros()/1.e6
@@ -1434,19 +1433,18 @@ do
                            use_foreign, enable)
     end
 
-    -- dthydro = dtmax
+    dthydro = dtmax
     -- __demand(__parallel)
     for i = 0, npieces do
-      -- dthydro min=
-                   calc_dt_hydro(rz_all_p[i],
+      dthydro min= calc_dt_hydro(rz_all_p[i],
                                  rz_spans[i],
                                  dt, dtmax, cfl, cflv,
                                  nspans_zones,
                                  enable)
     end
 
-    -- cycle += 1
-    -- time += dt
+    cycle += 1
+    time += dt
 
     -- c.legion_runtime_end_trace(__runtime(), __context(), 0)
   end
