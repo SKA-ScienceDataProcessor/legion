@@ -17,14 +17,14 @@
 --   ["pennant.tests/sedovsmall/sedovsmall.pnt",
 --    "-npieces", "1", "-compact", "0"],
 --   ["pennant.tests/sedovsmall/sedovsmall.pnt",
---    "-npieces", "2", "-compact", "0",
+--    "-npieces", "2", "-compact", "0", "-ll:cpu", "2",
 --    "-absolute", "1e-6", "-relative", "1e-6", "-relative_absolute", "1e-9"],
 --   ["pennant.tests/sedov/sedov.pnt", "-npieces", "1", "-compact", "0",
 --    "-absolute", "2e-6", "-relative", "1e-8", "-relative_absolute", "1e-10"],
---   ["pennant.tests/sedov/sedov.pnt", "-npieces", "3", "-compact", "0",
+--   ["pennant.tests/sedov/sedov.pnt", "-npieces", "3", "-compact", "0", "-ll:cpu", "3",
 --    "-absolute", "2e-6", "-relative", "1e-8", "-relative_absolute", "1e-10"],
 --   ["pennant.tests/leblanc/leblanc.pnt", "-npieces", "1", "-compact", "0"],
---   ["pennant.tests/leblanc/leblanc.pnt", "-npieces", "2", "-compact", "0"]
+--   ["pennant.tests/leblanc/leblanc.pnt", "-npieces", "2", "-compact", "0", "-ll:cpu", "2"]
 -- ]
 
 -- Inspired by https://github.com/losalamos/PENNANT
