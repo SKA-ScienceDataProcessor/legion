@@ -169,7 +169,7 @@ namespace Realm {
   };
 
   LoggerConfig::LoggerConfig(void)
-    : cmdline_read(false), default_level(Logger::LEVEL_PRINT), stream(0)
+    : cmdline_read(false), default_level(Logger::REALM_LOGGING_MIN_LEVEL), stream(0)
   {}
 
   LoggerConfig::~LoggerConfig(void)
