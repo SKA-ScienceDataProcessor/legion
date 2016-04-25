@@ -244,7 +244,7 @@ ifeq ($(strip $(USE_HDF)), 1)
   LEGION_LD_FLAGS      += -lhdf5
 endif
 
-SKIP_MACHINES= titan% daint%
+SKIP_MACHINES= titan% daint% login-sand%
 #Extra options for MPI support in GASNet
 ifeq ($(strip $(USE_MPI)),1)
   # Skip any machines on this list list
