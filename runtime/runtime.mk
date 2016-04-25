@@ -252,9 +252,9 @@ ifeq ($(strip $(USE_MPI)),1)
     CC		:= mpicc
     CXX		:= mpicxx
     F90         := mpif90
-    LEGION_LD_FLAGS	+= -L$(MPI)/lib -lmpi
-    LAPACK_LIBS ?= -lblas
   endif
+  LEGION_LD_FLAGS	+= -L$(MPI)/lib -lmpi
+  LAPACK_LIBS ?= -lblas
 endif
 
 endif # ifeq SHARED_LOWLEVEL
