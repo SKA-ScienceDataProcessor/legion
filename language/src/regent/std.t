@@ -626,6 +626,15 @@ function std.type_sub(t, mapping)
     return std.ref(std.type_sub(t.pointer_type, mapping), unpack(t.field_path))
   elseif terralib.types.istype(t) and t:ispointer() then
     return &std.type_sub(t.type, mapping)
+  elseif std.is_partition(t) then
+    local parent_region_symbol = mapping[t.parent_region_symbol] or t.parent_region_symbol
+    local colors_symbol = mapping[t.colors_symbol] or t.colors_symbol
+    if parent_region_symbol == t.parent_region_symbol and
+       colors_symbol == t.colors_symbol then
+       return t
+    else
+      return std.partition(t.disjointness, parent_region_symbol, colors_symbol)
+    end
   else
     return t
   end
@@ -851,7 +860,7 @@ end
 local function reconstruct_param_as_arg_symbol(param_type, mapping)
   local param_as_arg_symbol = mapping[param_type]
   for k, v in pairs(mapping) do
-    if std.is_symbol(v) and v:gettype() == mapping[param_type] then
+    if std.is_symbol(v) and (v:gettype() == param_type or v:gettype() == mapping[param_type]) then
       param_as_arg_symbol = v
     end
   end
@@ -976,25 +985,65 @@ function std.validate_args(node, params, args, isvararg, return_type, mapping, s
   return reconstruct_return_as_arg_type(return_type, mapping)
 end
 
+local function unpack_type(old_type, mapping)
+  if std.is_ispace(old_type) then
+    local index_type = std.type_sub(old_type.index_type, mapping)
+    return std.ispace(index_type), true
+  elseif std.is_region(old_type) then
+    local ispace_type
+    if not mapping[old_type:ispace()] then
+      ispace_type = unpack_type(old_type:ispace(), mapping)
+    else
+      ispace_type = std.type_sub(old_type:ispace(), mapping)
+    end
+    local fspace_type = std.type_sub(old_type.fspace_type, mapping)
+    return std.region(std.newsymbol(ispace_type, old_type.ispace_symbol:hasname()), fspace_type), true
+  elseif std.is_partition(old_type) then
+    local parent_region_type = std.type_sub(old_type:parent_region(), mapping)
+    local colors_type = std.type_sub(old_type:colors(), mapping)
+    local parent_region_symbol = old_type.parent_region_symbol
+    local colors_symbol = old_type.colors_symbol
+    assert(not mapping[parent_region_symbol] or
+           mapping[parent_region_symbol]:gettype() == parent_region_type)
+    assert(not mapping[colors_symbol] or
+           mapping[colors_symbol]:gettype() == colors_type)
+    return std.partition(
+      old_type.disjointness,
+      mapping[parent_region_symbol] or
+      std.newsymbol(parent_region_type, parent_region_symbol:hasname()),
+      mapping[colors_symbol] or
+      std.newsymbol(colors_type, colors_symbol:hasname())), true
+  elseif std.is_cross_product(old_type) then
+    local partitions = data.zip(old_type:partitions(), old_type.partition_symbols):map(
+      function(pair)
+        local old_partition_type, old_partition_symbol = unpack(pair)
+        return std.newsymbol(
+          std.type_sub(old_partition_type, mapping),
+          old_partition_symbol:getname())
+    end)
+    return std.cross_product(unpack(partitions)), true
+  elseif std.is_list_of_regions(old_type) then
+    return std.list(unpack_type(old_type.element_type, mapping)), true
+  else
+    return std.type_sub(old_type, mapping), false
+  end
+end
+
 function std.validate_fields(fields, constraints, params, args)
   local mapping = {}
   for i, param in ipairs(params) do
     local arg = args[i]
     mapping[param] = arg
+    mapping[param:gettype()] = arg:gettype()
   end
 
   local new_fields = terralib.newlist()
   for _, old_field in ipairs(fields) do
     local old_symbol, old_type = old_field.field, old_field.type
     local new_symbol = std.newsymbol(old_symbol:getname())
-    local new_type
-    if std.is_region(old_type) then
-      mapping[old_symbol] = new_symbol
-      local new_fspace_type = std.type_sub(old_type.fspace_type, mapping)
-      new_type = std.region(new_fspace_type)
-    else
-      new_type = std.type_sub(old_type, mapping)
-    end
+    mapping[old_symbol] = new_symbol
+    local new_type = unpack_type(old_type, mapping)
+    mapping[old_type] = new_type
     new_symbol:settype(new_type)
     new_fields:insert({
         field = new_symbol:getname(),
@@ -1064,8 +1113,17 @@ function std.unpack_fields(fs, symbols)
   fs:complete() -- Need fields
   local old_symbols = std.struct_entries_symbols(fs)
 
+  -- give an identity mapping for field space arguments
+  -- to avoid having two different symbols of the same name
+  -- (which can later seriously confuse type substitution)
   local mapping = {}
+  for i, arg in ipairs(fs.args) do
+    mapping[arg] = arg
+    mapping[arg:gettype()] = arg:gettype()
+  end
+
   local new_fields = terralib.newlist()
+  local new_constraints = terralib.newlist()
   local needs_unpack = false
   for i, old_field in ipairs(fs:getentries()) do
     local old_symbol, old_type = old_symbols[i], old_field.type
@@ -1076,18 +1134,18 @@ function std.unpack_fields(fs, symbols)
     else
       new_symbol = std.newsymbol(old_symbol:getname())
     end
-    local new_type
-    if std.is_region(old_type) then
-      mapping[old_symbol] = new_symbol
-      local fspace_type = std.type_sub(old_type.fspace_type, mapping)
-      new_type = std.region(fspace_type)
-      needs_unpack = true
-    else
-      new_type = std.type_sub(old_type, mapping)
-      if std.is_fspace_instance(new_type) then
-        new_type = std.unpack_fields(new_type)
-      end
+
+    mapping[old_symbol] = new_symbol
+    local new_type, is_unpack = unpack_type(old_type, mapping)
+    mapping[old_type] = new_type
+    needs_unpack = needs_unpack or is_unpack
+
+    if std.is_fspace_instance(new_type) then
+      local sub_type, sub_constraints = std.unpack_fields(new_type)
+      new_type = sub_type
+      new_constraints:insertall(sub_constraints)
     end
+
     new_symbol:settype(new_type)
     new_fields:insert({
         field = new_symbol:getname(),
@@ -1100,7 +1158,6 @@ function std.unpack_fields(fs, symbols)
   end
 
   local constraints = fs:getconstraints()
-  local new_constraints = terralib.newlist()
   for _, constraint in ipairs(constraints) do
     local lhs = mapping[constraint.lhs] or constraint.lhs
     local rhs = mapping[constraint.rhs] or constraint.rhs
@@ -1260,9 +1317,9 @@ function std.implicit_cast(from, to, expr)
   then
     return to:force_cast(from, to, expr)
   elseif std.is_index_type(to) then
-    return `([to](expr))
+    return `([to]([expr]))
   else
-    return quote var v : to = [expr] in v end
+    return `([to](expr))
   end
 end
 
@@ -1694,6 +1751,14 @@ local bounded_type = terralib.memoize(function(index_type, ...)
     return a + b
   end
 
+  terra st:to_point()
+    return ([index_type](@self)):to_point()
+  end
+
+  terra st:to_domain_point()
+    return ([index_type](@self)):to_domain_point()
+  end
+
   function st:force_cast(from, to, expr)
     assert(std.is_bounded_type(from) and std.is_bounded_type(to) and
              (#(from:bounds()) > 1) == (#(to:bounds()) > 1))
@@ -1826,10 +1891,10 @@ function std.index_type(base_type, displayname)
     end
   end
 
-  function st:to_point(expr)
-    assert(self.dim >= 1)
-    local fields = self.fields
-    local pt = c["legion_point_" .. tostring(self.dim) .. "d_t"]
+  local function make_point(expr)
+    local dim = data.max(st.dim, 1)
+    local fields = st.fields
+    local pt = c["legion_point_" .. tostring(dim) .. "d_t"]
 
     if fields then
       return quote
@@ -1842,12 +1907,16 @@ function std.index_type(base_type, displayname)
     end
   end
 
-  function st:to_domain_point(expr)
-    local index = terralib.newsymbol(self.impl_type)
+  terra st:to_point()
+    return [make_point(self)]
+  end
+
+  local function make_domain_point(expr)
+    local index = terralib.newsymbol(st.impl_type)
 
     local values
-    if self.fields then
-      values = self.fields:map(function(field) return `(index.[field]) end)
+    if st.fields then
+      values = st.fields:map(function(field) return `(index.[field]) end)
     else
       values = terralib.newlist({index})
     end
@@ -1859,10 +1928,14 @@ function std.index_type(base_type, displayname)
       var [index] = [expr].__ptr
     in
       c.legion_domain_point_t {
-        dim = [data.max(self.dim, 1)],
+        dim = [data.max(st.dim, 1)],
         point_data = arrayof(c.coord_t, [values]),
       }
     end
+  end
+
+  terra st:to_domain_point()
+    return [make_domain_point(self)]
   end
 
   return setmetatable(st, index_type)
@@ -1881,6 +1954,7 @@ std.int1d = std.index_type(int, "int1d")
 std.int2d = std.index_type(__int2d, "int2d")
 std.int3d = std.index_type(__int3d, "int3d")
 
+local next_ispace_id = 1
 function std.ispace(index_type)
   assert(terralib.types.istype(index_type) and std.is_index_type(index_type),
          "Ispace type requires index type")
@@ -1903,8 +1977,16 @@ function std.ispace(index_type)
     return `([to] { impl = [expr].impl })
   end
 
-  function st.metamethods.__typename(st)
-    return "ispace(" .. tostring(st.index_type) .. ")"
+  if std.config["debug"] then
+    local id = next_ispace_id
+    next_ispace_id = next_ispace_id + 1
+    function st.metamethods.__typename(st)
+      return "ispace#" .. tostring(id) .. "(" .. tostring(st.index_type) .. ")"
+    end
+  else
+    function st.metamethods.__typename(st)
+      return "ispace(" .. tostring(st.index_type) .. ")"
+    end
   end
 
   return st

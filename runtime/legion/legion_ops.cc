@@ -3059,10 +3059,15 @@ namespace Legion {
                                             output.src_instances[idx],
                                             src_targets,
                                             IS_REDUCE(dst_requirements[idx]));
+          if (Runtime::legion_spy_enabled)
+            runtime->forest->log_mapping_decision(unique_op_id, idx, 
+                                                  src_requirements[idx],
+                                                  src_targets);
           // If we have a compsite reference, we need to map it
           // as a virtual region
           if (src_composite >= 0)
           {
+            // No need to do the registration here
             runtime->forest->map_virtual_region(src_contexts[idx],
                                                 src_requirements[idx],
                                                 src_targets[src_composite],
@@ -3074,29 +3079,34 @@ namespace Legion {
                                                 , unique_op_id
 #endif
                                                 );
-            // No need to do the registration here
-            continue;
           }
-          // Now do the registration
-          set_mapping_state(idx, true/*src*/);
-          runtime->forest->physical_register_only(src_contexts[idx],
-                                                  src_requirements[idx],
-                                                  src_versions[idx],
-                                                  this, idx, local_completion,
-                                                  false/*defer add users*/,
-                                                  map_applied_conditions,
-                                                  src_targets
+          else
+          {
+            // Now do the registration
+            set_mapping_state(idx, true/*src*/);
+            runtime->forest->physical_register_only(src_contexts[idx],
+                                                    src_requirements[idx],
+                                                    src_versions[idx],
+                                                    this, idx, local_completion,
+                                                    false/*defer add users*/,
+                                                    map_applied_conditions,
+                                                    src_targets
 #ifdef DEBUG_LEGION
-                                                  , get_logging_name()
-                                                  , unique_op_id
+                                                    , get_logging_name()
+                                                    , unique_op_id
 #endif
-                                                  );
+                                                    );
+          }
         }
         else
         {
           // Restricted case, get the instances from the parent
           parent_ctx->get_physical_references(src_parent_indexes[idx],
                                               src_targets);
+          if (Runtime::legion_spy_enabled)
+            runtime->forest->log_mapping_decision(unique_op_id, idx, 
+                                                  src_requirements[idx],
+                                                  src_targets);
           set_mapping_state(idx, true/*src*/);
           runtime->forest->traverse_and_register(src_contexts[idx],
                                                  src_privilege_paths[idx],
@@ -3112,10 +3122,6 @@ namespace Legion {
 #endif
                                                  );
         }
-        if (Runtime::legion_spy_enabled)
-          runtime->forest->log_mapping_decision(unique_op_id, idx, 
-                                                src_requirements[idx],
-                                                src_targets);
         // Little bit of a hack here, if we are going to do a reduction
         // explicit copy, switch the privileges to read-write when doing
         // the registration since we know we are using normal instances
@@ -4227,6 +4233,7 @@ namespace Legion {
     {
       deactivate_operation();
       free_fields.clear();
+      parent_req_indexes.clear();
       // Return this to the available deletion ops on the queue
       runtime->free_deletion_op(this);
     }
@@ -4249,99 +4256,157 @@ namespace Legion {
     void DeletionOp::trigger_dependence_analysis(void)
     //--------------------------------------------------------------------------
     {
-      begin_dependence_analysis();
+      std::vector<RegionRequirement> deletion_requirements;
       switch (kind)
       {
         case INDEX_SPACE_DELETION:
           {
-            parent_ctx->analyze_destroy_index_space(index_space, this);
+            parent_ctx->analyze_destroy_index_space(index_space, 
+                                                    deletion_requirements,
+                                                    parent_req_indexes);
             break;
           }
         case INDEX_PARTITION_DELETION:
           {
-            parent_ctx->analyze_destroy_index_partition(index_part, this);
+            parent_ctx->analyze_destroy_index_partition(index_part, 
+                                                        deletion_requirements,
+                                                        parent_req_indexes);
             break;
           }
         case FIELD_SPACE_DELETION:
           {
-            parent_ctx->analyze_destroy_field_space(field_space, this);
+            parent_ctx->analyze_destroy_field_space(field_space, 
+                                                    deletion_requirements,
+                                                    parent_req_indexes);
             break;
           }
         case FIELD_DELETION:
           {
-            parent_ctx->analyze_destroy_fields(field_space, this, free_fields);
+            parent_ctx->analyze_destroy_fields(field_space, free_fields, 
+                                               deletion_requirements,
+                                               parent_req_indexes);
             break;
           }
         case LOGICAL_REGION_DELETION:
           {
-            parent_ctx->analyze_destroy_logical_region(logical_region, this);
+            parent_ctx->analyze_destroy_logical_region(logical_region,
+                                                       deletion_requirements,
+                                                       parent_req_indexes);
             break;
           }
         case LOGICAL_PARTITION_DELETION:
           {
-            parent_ctx->analyze_destroy_logical_partition(logical_part, this);
+            parent_ctx->analyze_destroy_logical_partition(logical_part, 
+                                                         deletion_requirements,
+                                                         parent_req_indexes);
             break;
           }
         default:
           // should never get here
           assert(false);
       }
+#ifdef DEBUG_LEGION
+      assert(deletion_requirements.size() == parent_req_indexes.size());
+#endif
+      if (Runtime::legion_spy_enabled)
+      {
+        for (unsigned idx = 0; idx < deletion_requirements.size(); idx++)
+        {
+          const RegionRequirement &req = deletion_requirements[idx];
+          if (req.handle_type != PART_PROJECTION)
+            LegionSpy::log_logical_requirement(unique_op_id, idx,true/*region*/,
+                                               req.region.index_space.id,
+                                               req.region.field_space.id,
+                                               req.region.tree_id,
+                                               req.privilege,
+                                               req.prop, req.redop,
+                                               req.parent.index_space.id);
+          else
+            LegionSpy::log_logical_requirement(unique_op_id,idx,false/*region*/,
+                                               req.partition.index_partition.id,
+                                               req.partition.field_space.id,
+                                               req.partition.tree_id,
+                                               req.privilege,
+                                               req.prop, req.redop,
+                                               req.parent.index_space.id);
+          LegionSpy::log_requirement_fields(unique_op_id, idx, 
+                                            req.privilege_fields);
+        }
+      }
+      begin_dependence_analysis();
+      for (unsigned idx = 0; idx < deletion_requirements.size(); idx++)
+      {
+        RegionRequirement &req = deletion_requirements[idx];
+        // Perform the normal region requirement analysis
+        VersionInfo version_info;
+        RestrictInfo restrict_info;
+        RegionTreePath privilege_path;
+        initialize_privilege_path(privilege_path, req);
+        runtime->forest->perform_deletion_analysis(this, idx, req, 
+                                                   version_info,
+                                                   restrict_info,
+                                                   privilege_path);
+        version_info.release();
+      }
       end_dependence_analysis();
     }
 
     //--------------------------------------------------------------------------
-    void DeletionOp::trigger_commit(void)
+    bool DeletionOp::trigger_execution(void)
     //--------------------------------------------------------------------------
     {
-      // By not actually doing any operations until commit time we ensure
-      // that the deletions don't actually impact the region tree state
-      // until we know that it is safe to do so.
       switch (kind)
       {
         case INDEX_SPACE_DELETION:
           {
-            bool top_level = runtime->finalize_index_space_destroy(index_space);
-            if (top_level)
+            // Only need to tell our parent if it is a top-level index space
+            if (runtime->forest->is_top_level_index_space(index_space))
               parent_ctx->register_index_space_deletion(index_space);
             break;
           }
         case INDEX_PARTITION_DELETION:
           {
-            runtime->finalize_index_partition_destroy(index_part);
+            parent_ctx->register_index_partition_deletion(index_part);
             break;
           }
         case FIELD_SPACE_DELETION:
           {
-            runtime->finalize_field_space_destroy(field_space);
             parent_ctx->register_field_space_deletion(field_space);
             break;
           }
         case FIELD_DELETION:
           {
-            runtime->finalize_field_destroy(field_space, free_fields);
             parent_ctx->register_field_deletions(field_space, free_fields);
             break;
           }
         case LOGICAL_REGION_DELETION:
           {
-            bool top_level = runtime->finalize_logical_region_destroy(
-                                                        logical_region);
-            // If this was a top-level region destruction
-            // tell the enclosing parent task it has lost privileges
-            if (top_level)
+            // Only need to tell our parent if it is a top-level region
+            if (runtime->forest->is_top_level_region(logical_region))
               parent_ctx->register_region_deletion(logical_region);
             break;
           }
         case LOGICAL_PARTITION_DELETION:
           {
-            runtime->finalize_logical_partition_destroy(logical_part);
+            // We don't need to register partition deletions explicitly
             break;
           }
         default:
           assert(false); // should never get here
       }
-      // Commit this operation
-      commit_operation(true/*deactivate*/);
+      complete_mapping();
+      complete_execution();
+      return true;
+    }
+
+    //--------------------------------------------------------------------------
+    unsigned DeletionOp::find_parent_index(unsigned idx)
+    //--------------------------------------------------------------------------
+    {
+#ifdef DEBUG_LEGION
+      assert(idx < parent_req_indexes.size());
+#endif
+      return parent_req_indexes[idx];
     }
 
     /////////////////////////////////////////////////////////////
@@ -7950,7 +8015,7 @@ namespace Legion {
           std::pair<unsigned,unsigned> src_key(src_index,src_idx);
           std::pair<unsigned,unsigned> dst_key(dst_index,dst_idx);
           std::map<std::pair<unsigned,unsigned>,unsigned>::iterator
-            record_finder = dependence_map.find(src_key);
+            record_finder = dependence_map.find(dst_key);
           if (record_finder == dependence_map.end())
           {
 #ifdef DEBUG_LEGION
@@ -7967,9 +8032,9 @@ namespace Legion {
           }
           else
           {
-            // Just add the destination to the collection
-            dependences[record_finder->second]->add_entry(dst_index, dst_idx);
-            dependence_map[dst_key] = record_finder->second;
+            // Just add the source to the collection
+            dependences[record_finder->second]->add_entry(src_index, src_idx);
+            dependence_map[src_key] = record_finder->second;
           }
           return false;
         }

@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "legion_config.h"
+#include "legion_template_help.h"
 
 // Make sure we have the appropriate defines in place for including realm
 #define REALM_USE_LEGION_LAYOUT_CONSTRAINTS
@@ -43,29 +44,6 @@
 namespace BindingLib { class Utility; } // BindingLib namespace
 
 namespace Legion {
-  /**
-   * \struct LegionStaticAssert
-   * Help with static assertions.
-   */
-  template<bool> struct LegionStaticAssert;
-  template<> struct LegionStaticAssert<true> { };
-#define LEGION_STATIC_ASSERT(condition) \
-  do { LegionStaticAssert<(condition)>(); } while (0)
-
-  /**
-   * \struct LegionTypeEquality
-   * Help with checking equality of types.
-   */
-  template<typename T, typename U>
-  struct LegionTypeInequality {
-  public:
-    static const bool value = true;
-  };
-  template<typename T>
-  struct LegionTypeInequality<T,T> {
-  public:
-    static const bool value = false;
-  };
 
   typedef ::legion_error_t LegionErrorType;
   typedef ::legion_privilege_mode_t PrivilegeMode;
@@ -77,6 +55,14 @@ namespace Legion {
   typedef ::legion_dependence_type_t DependenceType;
   typedef ::legion_index_space_kind_t IndexSpaceKind;
   typedef ::legion_file_mode_t LegionFileMode;
+  typedef ::legion_execution_constraint_t ExecutionConstraintKind;
+  typedef ::legion_layout_constraint_t LayoutConstraintKind;
+  typedef ::legion_equality_kind_t EqualityKind;
+  typedef ::legion_dimension_kind_t DimensionKind;
+  typedef ::legion_isa_kind_t ISAKind;
+  typedef ::legion_resource_constraint_t ResourceKind;
+  typedef ::legion_launch_constraint_t LaunchKind;
+  typedef ::legion_specialized_constraint_t SpecializedKind;
 
   // Forward declarations for user level objects
   // legion.h
@@ -284,6 +270,7 @@ namespace Legion {
       HLR_SELECT_TUNABLE_TASK_ID,
       HLR_DEFERRED_ENQUEUE_TASK_ID,
       HLR_DEFER_MAPPER_MESSAGE_TASK_ID,
+      HLR_DEFER_COMPOSITE_HANDLE_TASK_ID,
       HLR_MESSAGE_ID, // These four must be last (see issue_runtime_meta_task)
       HLR_SHUTDOWN_ATTEMPT_TASK_ID,
       HLR_SHUTDOWN_NOTIFICATION_TASK_ID,
@@ -345,6 +332,7 @@ namespace Legion {
         "Partition Semantic Request",                             \
         "Select Tunable",                                         \
         "Deferred Task Enqueue",                                  \
+        "Deferred Composite Handle",                              \
         "Deferred Mapper Message",                                \
         "Remote Message",                                         \
         "Shutdown Attempt",                                       \
@@ -787,7 +775,7 @@ namespace Legion {
       REGION_TREE_PHYSICAL_FILL_FIELDS_CALL,
       REGION_TREE_PHYSICAL_ATTACH_FILE_CALL,
       REGION_TREE_PHYSICAL_DETACH_FILE_CALL,
-      REGION_NODE_REGISTER_LOGICAL_NODE_CALL,
+      REGION_NODE_REGISTER_LOGICAL_USER_CALL,
       REGION_NODE_OPEN_LOGICAL_NODE_CALL,
       REGION_NODE_REGISTER_LOGICAL_FAT_PATH_CALL,
       REGION_NODE_OPEN_LOGICAL_FAT_PATH_CALL,
@@ -970,7 +958,7 @@ namespace Legion {
       "Region Tree Physical Fill Fields",                             \
       "Region Tree Physical Attach File",                             \
       "Region Tree Physical Detach File",                             \
-      "Region Node Register Logical Node",                            \
+      "Region Node Register Logical User",                            \
       "Region Node Open Logical Node",                                \
       "Region Node Register Logical Fat Path",                        \
       "Region Node Open Logical Fat Path",                            \

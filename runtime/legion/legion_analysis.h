@@ -404,6 +404,7 @@ namespace Legion {
       void check_init(void);
       void clear_logical_users(void);
       void reset(void);
+      void clear_deleted_state(const FieldMask &deleted_mask);
       void sanity_check(void);
     public:
       void initialize_state(ApEvent term_event,
@@ -852,9 +853,19 @@ namespace Legion {
       void register_child(unsigned depth, const ColorPoint &color);
       void clear();
     public:
+#ifdef DEBUG_LEGION 
       bool has_child(unsigned depth) const;
       const ColorPoint& get_child(unsigned depth) const;
-      unsigned get_path_length(void) const;
+#else
+      inline bool has_child(unsigned depth) const
+        { return path[depth].is_valid(); }
+      inline const ColorPoint& get_child(unsigned depth) const
+        { return path[depth]; }
+#endif
+      inline unsigned get_path_length(void) const
+        { return ((max_depth-min_depth)+1); }
+      inline unsigned get_min_depth(void) const { return min_depth; }
+      inline unsigned get_max_depth(void) const { return max_depth; }
     protected:
       std::vector<ColorPoint> path;
       unsigned min_depth;
@@ -1020,6 +1031,26 @@ namespace Legion {
     };
 
     /**
+     * \class DeletionInvalidator
+     * A class for invalidating current states for deletions
+     */
+    class DeletionInvalidator : public NodeTraverser {
+    public:
+      DeletionInvalidator(ContextID ctx, const FieldMask &deletion_mask);
+      DeletionInvalidator(const DeletionInvalidator &rhs);
+      ~DeletionInvalidator(void);
+    public:
+      DeletionInvalidator& operator=(const DeletionInvalidator &rhs);
+    public:
+      virtual bool visit_only_valid(void) const;
+      virtual bool visit_region(RegionNode *node);
+      virtual bool visit_partition(PartitionNode *node);
+    protected:
+      const ContextID ctx;
+      const FieldMask &deletion_mask;
+    };
+
+    /**
      * \class RestrictionMutator
      * A class for mutating the state of restrction fields
      */
@@ -1070,6 +1101,12 @@ namespace Legion {
      * A class for keeping track of references to physical instances
      */
     class InstanceRef {
+    public:
+      struct DeferCompositeHandleArgs {
+      public:
+        HLRTaskID hlr_id;
+        CompositeView *view;
+      };
     public:
       InstanceRef(bool composite = false);
       InstanceRef(const InstanceRef &rhs);
@@ -1123,7 +1160,9 @@ namespace Legion {
           get_field_accessor(FieldID fid) const;
     public:
       void pack_reference(Serializer &rez, AddressSpaceID target);
-      void unpack_reference(Runtime *rt, Deserializer &derez, RtEvent &ready);
+      void unpack_reference(Runtime *rt, TaskOp *task,
+                            Deserializer &derez, RtEvent &ready);
+      static void handle_deferred_composite_handle(const void *args);
     private:
       FieldMask valid_fields; 
       ApEvent ready_event;
@@ -1185,8 +1224,8 @@ namespace Legion {
       const InstanceRef& get_composite_ref(void) const;
     public:
       void pack_references(Serializer &rez, AddressSpaceID target) const;
-      void unpack_references(Runtime *runtime, Deserializer &derez,
-                             std::set<RtEvent> &ready_events);
+      void unpack_references(Runtime *runtime, TaskOp *task,
+          Deserializer &derez, std::set<RtEvent> &ready_events);
     public:
       void add_valid_references(ReferenceSource source) const;
       void remove_valid_references(ReferenceSource source) const;

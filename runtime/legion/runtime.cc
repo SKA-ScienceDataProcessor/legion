@@ -3048,7 +3048,6 @@ namespace Legion {
             {
               // Send back the response starting with the instance
               PhysicalManager *manager = result.impl;
-              manager->send_manager(source);
               Serializer rez;
               {
                 RezCheck z(rez);
@@ -3098,7 +3097,6 @@ namespace Legion {
             if (success)
             {
               PhysicalManager *manager = result.impl;
-              manager->send_manager(source);
               Serializer rez;
               {
                 RezCheck z(rez);
@@ -3151,7 +3149,6 @@ namespace Legion {
             if (success)
             {
               PhysicalManager *manager = result.impl;
-              manager->send_manager(source);
               Serializer rez;
               {
                 RezCheck z(rez);
@@ -3211,7 +3208,6 @@ namespace Legion {
             if (success)
             {
               PhysicalManager *manager = result.impl;
-              manager->send_manager(source);
               Serializer rez;
               {
                 RezCheck z(rez);
@@ -3257,7 +3253,6 @@ namespace Legion {
             if (success)
             {
               PhysicalManager *manager = result.impl;
-              manager->send_manager(source);
               Serializer rez;
               {
                 RezCheck z(rez);
@@ -3293,7 +3288,6 @@ namespace Legion {
             if (success)
             {
               PhysicalManager *manager = result.impl;
-              manager->send_manager(source);
               Serializer rez;
               {
                 RezCheck z(rez);
@@ -3336,13 +3330,13 @@ namespace Legion {
 #ifdef DEBUG_LEGION
       assert((CREATE_INSTANCE_CONSTRAINTS <= kind) &&
              (kind <= FIND_ONLY_LAYOUT));
-      // Find the manager
-      PhysicalManager *manager = dynamic_cast<PhysicalManager*>(
-                            runtime->find_distributed_collectable(did));
-#else
-      PhysicalManager *manager = static_cast<PhysicalManager*>(
-                            runtime->find_distributed_collectable(did));
 #endif
+      RtEvent manager_ready = RtEvent::NO_RT_EVENT;
+      PhysicalManager *manager = 
+        runtime->find_or_request_physical_manager(did, manager_ready);
+      // If the manager isn't ready yet, then we need to wait for it
+      if (manager_ready.exists())
+        manager_ready.wait();
       // If we acquired on the owner node, add our own local reference
       // and then remove the remote DID
       if (acquire)
@@ -7998,7 +7992,6 @@ namespace Legion {
         assert(false);
         exit(ERROR_LEAF_TASK_VIOLATION);
       }
-
 #endif
       Processor proc = ctx->get_executing_processor();
       DeletionOp *op = get_available_deletion_op(true);
@@ -8007,10 +8000,10 @@ namespace Legion {
     }
 
     //--------------------------------------------------------------------------
-    bool Runtime::finalize_index_space_destroy(IndexSpace handle)
+    void Runtime::finalize_index_space_destroy(IndexSpace handle)
     //--------------------------------------------------------------------------
     {
-      return forest->destroy_index_space(handle, address_space);
+      forest->destroy_index_space(handle, address_space);
     }
 
     //--------------------------------------------------------------------------
@@ -8080,6 +8073,7 @@ namespace Legion {
       forest->create_index_partition(pid, parent, partition_color, 
                                      new_index_spaces, color_space, part_kind, 
                                      allocable ? MUTABLE : NO_MEMORY);
+      ctx->register_index_partition_creation(pid);
       return pid;
     }
 
@@ -8224,6 +8218,7 @@ namespace Legion {
                                      new_index_spaces, color_space,
                                      disjoint ? DISJOINT_KIND : ALIASED_KIND,
                                      MUTABLE);
+      ctx->register_index_partition_creation(pid);
       return pid;
     }
 
@@ -8264,6 +8259,7 @@ namespace Legion {
       forest->create_index_partition(pid, parent, partition_color, 
                                      coloring, color_space, 
                                      part_kind, NO_MEMORY);
+      ctx->register_index_partition_creation(pid);
       return pid;
     }
 
@@ -8326,6 +8322,7 @@ namespace Legion {
                                      new_subspaces, color_space,
                                      disjoint ? DISJOINT_KIND : ALIASED_KIND,
                                      NO_MEMORY);
+      ctx->register_index_partition_creation(pid);
       return pid;
     }
 
@@ -8376,6 +8373,7 @@ namespace Legion {
       forest->create_index_partition(pid, parent, partition_color, 
                                      convex_hulls, coloring,
                                      color_space, part_kind, NO_MEMORY);
+      ctx->register_index_partition_creation(pid);
       return pid;
     }
 
@@ -8444,6 +8442,7 @@ namespace Legion {
                                      color_space,
                                      disjoint ? DISJOINT_KIND : ALIASED_KIND,
                                      NO_MEMORY);
+      ctx->register_index_partition_creation(pid);
       return pid;
     }
 
@@ -8560,6 +8559,7 @@ namespace Legion {
       forest->create_index_partition(pid, parent, partition_color,
                                      new_index_spaces, color_space,
                                      DISJOINT_KIND, MUTABLE);
+      ctx->register_index_partition_creation(pid);
       return pid;
     }
 
@@ -10333,10 +10333,10 @@ namespace Legion {
     }
 
     //--------------------------------------------------------------------------
-    bool Runtime::finalize_logical_region_destroy(LogicalRegion handle)
+    void Runtime::finalize_logical_region_destroy(LogicalRegion handle)
     //--------------------------------------------------------------------------
     {
-      return forest->destroy_logical_region(handle, address_space);
+      forest->destroy_logical_region(handle, address_space);
     }
 
     //--------------------------------------------------------------------------
@@ -14482,7 +14482,7 @@ namespace Legion {
     //--------------------------------------------------------------------------
     {
       find_messenger(target)->send_message(rez, SEND_INSTANCE_REQUEST,
-                                        MANAGER_VIRTUAL_CHANNEL, true/*flush*/);
+                                        DEFAULT_VIRTUAL_CHANNEL, true/*flush*/);
     }
 
     //--------------------------------------------------------------------------
@@ -14490,7 +14490,7 @@ namespace Legion {
     //--------------------------------------------------------------------------
     {
       find_messenger(target)->send_message(rez, SEND_INSTANCE_RESPONSE,
-                                        MANAGER_VIRTUAL_CHANNEL, true/*flush*/);
+                                        DEFAULT_VIRTUAL_CHANNEL, true/*flush*/);
     }
 
     //--------------------------------------------------------------------------
@@ -20157,6 +20157,11 @@ namespace Legion {
         case HLR_DEFER_MAPPER_MESSAGE_TASK_ID:
           {
             MapperManager::handle_deferred_message(args);
+            break;
+          }
+        case HLR_DEFER_COMPOSITE_HANDLE_TASK_ID:
+          {
+            InstanceRef::handle_deferred_composite_handle(args);
             break;
           }
         case HLR_SHUTDOWN_ATTEMPT_TASK_ID:

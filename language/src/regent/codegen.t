@@ -766,44 +766,32 @@ local function get_element_pointer(cx, region_types, index_type, field_type,
   if bounds_checks then
     local terra check(runtime : c.legion_runtime_t,
                       ctx : c.legion_context_t,
-                      pointer : c.legion_ptr_t,
+                      pointer : index_type,
                       pointer_index : uint32,
                       region : c.legion_logical_region_t,
                       region_index : uint32)
       if region_index == pointer_index then
-        var check = c.legion_ptr_safe_cast(runtime, ctx, pointer, region)
-        if c.legion_ptr_is_null(check) then
+        var check = c.legion_domain_point_safe_cast(runtime, ctx, pointer:to_domain_point(), region)
+        if c.legion_domain_point_is_null(check) then
           std.assert(false, ["pointer " .. tostring(index_type) .. " is out-of-bounds"])
         end
       end
       return pointer
     end
 
-    local pointer_value
-    if not index_type.fields then
-      -- Currently unchecked.
-    elseif #index_type.fields == 1 then
-      local field = index_type.fields[1]
-      pointer_value = `(c.legion_ptr_t { value = [index].__ptr.[field] })
-    else
-      -- Currently unchecked.
-    end
-
+    local pointer_value = index
     local pointer_index = 1
     if #region_types > 1 then
       pointer_index = `([index].__index)
     end
 
-    if pointer_value then
-      for region_index, region_type in ipairs(region_types) do
-        assert(cx:has_region(region_type))
-        local lr = cx:region(region_type).logical_region
-        index = `([index_type] {
-            __ptr = check(
-              [cx.runtime], [cx.context],
-              [pointer_value], [pointer_index],
-              [lr].impl, [region_index])})
-      end
+    for region_index, region_type in ipairs(region_types) do
+      assert(cx:has_region(region_type))
+      local lr = cx:region(region_type).logical_region
+      index = `check(
+        [cx.runtime], [cx.context],
+        [pointer_value], [pointer_index],
+        [lr].impl, [region_index])
     end
   end
 
@@ -1656,7 +1644,7 @@ function codegen.expr_index_access(cx, node)
 
     actions = quote
       [actions]
-      var dp = [color_type:to_domain_point(color)]
+      var dp = color:to_domain_point()
       var [lr] = c.legion_logical_partition_get_logical_subregion_by_color_domain_point(
         [cx.runtime], [cx.context],
         [value.value].impl, dp)
@@ -1772,9 +1760,6 @@ function codegen.expr_index_access(cx, node)
       end
     end
     return values.value(expr.just(actions, result), expr_type)
-  elseif std.is_region(value_type) then
-    local index = codegen.expr(cx, node.index):read(cx)
-    return values.ref(index, node.expr_type.pointer_type)
   elseif std.is_list(value_type) then
     local index = codegen.expr(cx, node.index):read(cx)
     if not std.is_list(index_type) then
@@ -1860,6 +1845,18 @@ function codegen.expr_index_access(cx, node)
       end
       return values.value(expr.just(actions, list), list_type)
     end
+  elseif std.is_region(value_type) then
+    local index = codegen.expr(cx, node.index):read(cx)
+
+    local pointer_type = node.expr_type.pointer_type
+    local pointer = index
+    if not std.type_eq(index_type, pointer_type) then
+      local point = std.implicit_cast(index_type, pointer_type.index_type, index.value)
+      pointer = expr.just(
+        index.actions,
+        `([pointer_type] { __ptr = [point].__ptr }))
+    end
+    return values.ref(pointer, pointer_type)
   else
     local index = codegen.expr(cx, node.index):read(cx)
     return codegen.expr(cx, node.value):get_index(cx, index, expr_type)
@@ -3084,8 +3081,8 @@ function codegen.expr_ispace(cx, node)
     actions = quote
       [actions]
       var domain = [domain_from_bounds](
-        [index_type:to_point(`([index_type](start_value)))],
-        [index_type:to_point(`([index_type](extent_value)))])
+        ([index_type](start_value)):to_point(),
+        ([index_type](extent_value)):to_point())
       var [is] = c.legion_index_space_create_domain([cx.runtime], [cx.context], domain)
     end
   end
@@ -6364,9 +6361,9 @@ function codegen.stat_var(cx, node)
     end
   end
 
-  if #rhs > 0 then
-    local decls = terralib.newlist()
-    for i, lh in ipairs(lhs) do
+  local decls = terralib.newlist()
+  for i, lh in ipairs(lhs) do
+    if rhs_values[i] then
       if node.values[i]:is(ast.typed.expr.Ispace) then
         actions = quote
           [actions]
@@ -6384,15 +6381,11 @@ function codegen.stat_var(cx, node)
         end
       end
       decls:insert(quote var [lh] = [ rhs_values[i] ] end)
-    end
-    return quote [actions]; [decls] end
-  else
-    local decls = terralib.newlist()
-    for i, lh in ipairs(lhs) do
+    else
       decls:insert(quote var [lh] end)
     end
-    return quote [decls] end
   end
+  return quote [actions]; [decls] end
 end
 
 function codegen.stat_var_unpack(cx, node)

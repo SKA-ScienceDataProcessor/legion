@@ -2581,6 +2581,31 @@ class LogicalRegion(object):
                 return False
         return True
 
+    def perform_logical_deletion(self, depth, path, op, req, field, prev, checks):
+        assert self is path[depth]
+        if field not in self.logical_state:
+            return True
+        arrived = (depth+1) == len(path)
+        force_close = (depth+1) < len(path)
+        next_child = path[depth+1] if not arrived else None
+        if not self.logical_state[field].perform_logical_deletion(op, req, next_child, 
+                                                            prev, checks, force_close):
+            return False
+        if not arrived:
+            return path[depth+1].perform_logical_deletion(depth+1, path, op, req, field,
+                                                          prev, checks)
+        elif not checks:
+            # Do all the invalidations and record any dependences
+            self.perform_deletion_invalidation(op, req, field)
+        return True
+
+    def perform_deletion_invalidation(self, op, req, field):
+        if field not in self.logical_state:
+            return
+        self.logical_state[field].perform_deletion_invalidation(op, req)
+        for child in self.children.itervalues():
+            child.perform_deletion_invalidation(op, req, field)
+
     def close_logical_tree(self, field, closed_users, permit_leave_open):
         if field not in self.logical_state:
             return
@@ -2634,16 +2659,23 @@ class LogicalRegion(object):
         return physical_state.perform_physical_close(op, req, inst,
                                                      perform_checks)
 
-    def close_physical_tree(self, depth, field, target, op, req, perform_checks):
+    def capture_composite_instance(self, depth, field, op, req):
+        physical_state = self.get_physical_state(depth, field)
+        return physical_state.capture_composite_instance(op, req)
+
+    def close_physical_tree(self, depth, field, target, op, req, 
+                            perform_checks, clear_state):
         for child in self.children.itervalues():
-            if not child.perform_close_physical_tree(depth, field, target, 
-                                                     op, req, perform_checks):
+            if not child.perform_close_physical_tree(depth, field, target, op, req, 
+                                    perform_checks, clear_state):
                 return False
         return True
 
-    def perform_close_physical_tree(self, depth, field, target, op, req, perform_checks):
+    def perform_close_physical_tree(self, depth, field, target, op, req, 
+                                    perform_checks, clear_state):
         physical_state = self.get_physical_state(depth, field)
-        return physical_state.close_physical_tree(target, op, req, perform_checks)
+        return physical_state.close_physical_tree(target, op, req, perform_checks, 
+                                                  clear_state)
 
     def mark_named_children(self):
         if self.name is not None:
@@ -2815,6 +2847,31 @@ class LogicalPartition(object):
                 return False
         return True
 
+    def perform_logical_deletion(self, depth, path, op, req, field, prev, checks):
+        assert self is path[depth]
+        if field not in self.logical_state:
+            return True
+        arrived = (depth+1) == len(path)
+        force_close = (depth+1) < len(path) 
+        next_child = path[depth+1] if not arrived else None
+        if not self.logical_state[field].perform_logical_deletion(op, req, next_child, 
+                                                            prev, checks, force_close):
+            return False
+        if not arrived:
+            return path[depth+1].perform_logical_deletion(depth+1, path, op, req, field,
+                                                          prev, checks)
+        elif not checks:
+            # Do all the invalidations and record and dependences
+            self.perform_deletion_invalidations(op, req, field)
+        return True
+
+    def perform_deletion_invalidation(self, op, req, field):
+        if field not in self.logical_state:
+            return
+        self.logical_state[field].perform_deletion_invalidation(op, req)
+        for child in self.children.itervalues():
+            child.perform_deletion_invalidation(op, req, field)
+
     def close_logical_tree(self, field, closed_users, permit_leave_open):
         if field not in self.logical_state:
             return
@@ -2843,16 +2900,23 @@ class LogicalPartition(object):
         return physical_state.perform_physical_close(op, req, inst,
                                                      perform_checks)
 
-    def close_physical_tree(self, depth, field, target, op, req, perform_checks):
+    def capture_composite_instance(self, depth, field, op, req):
+        physical_state = self.get_physical_state(depth, field)
+        return physical_state.capture_composite_instance(op, req)
+
+    def close_physical_tree(self, depth, field, target, op, req, 
+                            perform_checks, clear_state):
         for child in self.children.itervalues():
-            if not child.perform_close_physical_tree(depth, field, target, 
-                                                     op, req, perform_checks):
+            if not child.perform_close_physical_tree(depth, field, target, op, req, 
+                                    perform_checks, clear_state):
                 return False
         return True
 
-    def perform_close_physical_tree(self, depth, field, target, op, req, perform_checks):
+    def perform_close_physical_tree(self, depth, field, target, op, req, 
+                                    perform_checks, clear_state):
         physical_state = self.get_physical_state(depth, field)
-        return physical_state.close_physical_tree(target, op, req, perform_checks)
+        return physical_state.close_physical_tree(target, op, req, perform_checks, 
+                                                  clear_state)
 
     def mark_named_children(self):
         if self.name is not None:
@@ -3003,6 +3067,25 @@ class LogicalState(object):
         self.previous_epoch_users = list()
         return True
 
+    def perform_logical_deletion(self, op, req, next_child, 
+                                 previous_deps, perform_checks, force_close):
+        arrived = next_child is None
+        if not arrived:
+            if not self.siphon_logical_deletion(op, req, next_child, previous_deps, 
+                                                perform_checks, force_close): 
+                return False
+            if not self.perform_epoch_analysis(op, req, perform_checks, 
+                                               arrived, previous_deps):  
+                return False
+        return True
+
+    def perform_deletion_invalidation(self, op, req):
+        dummy_previous = list()
+        self.perform_epoch_analysis(op, req, False, False, dummy_previous)
+        self.open_children = dict()
+        self.open_redop = dict()
+        self.current_redop = 0
+
     # Maybe not the most intuitive name for a method but it aligns with the runtime
     def siphon_logical_children(self, op, req, next_child, 
                                 previous_deps, perform_checks):
@@ -3130,6 +3213,37 @@ class LogicalState(object):
             else:
                 # Normal read-write case is easy
                 self.open_children[next_child] = OPEN_READ_WRITE 
+        return True
+
+    def siphon_logical_deletion(self, op, req, next_child, 
+                                previous_deps, perform_checks, force_close):
+        # If our child is not open, then we are done
+        if next_child not in self.open_children:
+            return True
+        # See which mode it is open in 
+        open_mode = self.open_children[next_child]
+        del self.open_children[next_child]
+        if open_mode == OPEN_READ_ONLY:
+            # If it is open read-only, there is nothing to do
+            pass
+        elif open_mode == OPEN_READ_WRITE:
+            if force_close and not self.perform_close_operation(self, child_to_close, 
+                                        False, op, req, previous_deps, perform_checks): 
+                return False
+        elif open_mode == OPEN_SINGLE_REDUCE:
+            if force_close: 
+                if not self.perform_close_operation(self, child_to_close,
+                            False, op, req, previous_deps, perform_checks):
+                    return False
+            else:
+                # Update the state to read-write
+                self.open_children[next_child] = OPEN_READ_WRITE
+        elif open_mode == OPEN_MULTI_REDUCE:
+            if not self.perform_close_operation(self, child_to_close,
+                              False, op, req, previous_deps, perform_checks):
+                return False
+        else:
+            assert False # should never get here
         return True
 
     def find_close_operation(self, op, req, perform_checks, error_str):
@@ -3400,8 +3514,8 @@ class PhysicalState(object):
             assert self.redop == 0
             assert not self.reduction_instances
             # If we are write only, we just need to close up any open children
-            if not self.node.close_physical_tree(self.depth, self.field, 
-                                                 None, op, req, perform_checks):
+            if not self.node.close_physical_tree(self.depth, self.field, None, 
+                                                 op, req, perform_checks, True):
                 return False
             # Clear out all previous valid instances make this the only one
             self.valid_instances = set()
@@ -3420,8 +3534,8 @@ class PhysicalState(object):
             # If we are writing, close up any open children
             if req.is_write():
                 # Close up the tree to our instance
-                if not self.node.close_physical_tree(self.depth, self.field, 
-                                                     inst, op, req, perform_checks):
+                if not self.node.close_physical_tree(self.depth, self.field, inst, 
+                                                     op, req, perform_checks, True):
                     return False
                 # Issue any reduction updates too
                 if self.redop <> 0:
@@ -3469,8 +3583,8 @@ class PhysicalState(object):
     def perform_fill_analysis(self, op, req, perform_checks):
         assert req.logical_node is self.node
         # Clean out our state and all our child states
-        if not self.node.close_physical_tree(self.depth, self.field, 
-                                             None, op, req, perform_checks):
+        if not self.node.close_physical_tree(self.depth, self.field, None, 
+                                             op, req, perform_checks, True):
             return False
         # Mark that we are dirty since we are writing
         self.dirty = True  
@@ -3487,13 +3601,13 @@ class PhysicalState(object):
             # This is a read only close operation, we just have to
             # invalidate all the stuff in the sub tree, no need to 
             # invalidate anything at this node
-            return self.node.close_physical_tree(self.depth, self.field,
-                                                 None, op, req, perform_checks)
+            return self.node.close_physical_tree(self.depth, self.field, None, 
+                                                 op, req, perform_checks, True)
         elif inst.is_virtual():
             target = CompositeInstance(op.state, self.node, self.depth, self.field)
             # Capture down the tree first
-            if not self.node.close_physical_tree(self.depth, self.field,
-                                                 target, op, req, perform_checks):
+            if not self.node.close_physical_tree(self.depth, self.field, target, 
+                                                 op, req, perform_checks, True):
                 return False
             # Now capture locally
             already_captured = set()
@@ -3508,8 +3622,8 @@ class PhysicalState(object):
                                               req.index, perform_checks, error_str):
                         return False
             # close sub-tree
-            if not self.node.close_physical_tree(self.depth, self.field,
-                                                 inst, op, req, perform_checks):
+            if not self.node.close_physical_tree(self.depth, self.field, inst, 
+                                                 op, req, perform_checks, True):
                 return False
             # Finally flush any outstanding reductions
             if self.reduction_instances:
@@ -3526,7 +3640,18 @@ class PhysicalState(object):
         self.valid_instances.add(target)
         return True
 
-    def close_physical_tree(self, target, op, req, perform_checks):
+    def capture_composite_instance(self, op, req):
+        target = CompositeInstance(op.state, self.node, self.depth, self.field)
+        # Capture down the tree first
+        result = self.node.close_physical_tree(self.depth, self.field, target, 
+                                               op, req, False, False)
+        assert result # Better have succeeded
+        # Now capture locally
+        already_captured = set()
+        target.capture(self, already_captured)
+        return target
+
+    def close_physical_tree(self, target, op, req, perform_checks, clear_state):
         # Issue any updates from our instances
         if target is not None and not target.is_virtual() and \
                   self.dirty and target not in self.valid_instances:
@@ -3534,8 +3659,8 @@ class PhysicalState(object):
                                             op, req.index, perform_checks, str(op)):
                 return False
         # Continue down the tree 
-        if not self.node.close_physical_tree(self.depth, self.field, 
-                                             target, op, req, perform_checks):
+        if not self.node.close_physical_tree(self.depth, self.field, target, op, req, 
+                                             perform_checks, clear_state):
             return False
         # If the target is a composite instance do the capture
         # otherwise flush any reductions
@@ -3550,10 +3675,11 @@ class PhysicalState(object):
                                             op, req.index, perform_checks, error_str):
                     return False
         # Now we can reset everything since we are closed
-        self.dirty = False
-        self.redop = 0
-        self.valid_instances = set()
-        self.reduction_instances = set()
+        if clear_state:
+            self.dirty = False
+            self.redop = 0
+            self.valid_instances = set()
+            self.reduction_instances = set()
         return True
 
     def find_valid_instances(self):
@@ -3882,7 +4008,8 @@ class Operation(object):
                  'finish_event', 'inter_close_ops', 'task', 'task_id', 'points', 
                  'creator', 'realm_copies', 'realm_fills', 'close_idx', 
                  'partition_kind', 'partition_node', 'node_name', 'cluster_name', 
-                 'generation', 'need_logical_replay', 'reachable_cache']
+                 'generation', 'need_logical_replay', 'reachable_cache', 
+                 'transitive_warning_issued']
     def __init__(self, state, uid):
         self.state = state
         self.uid = uid
@@ -3919,6 +4046,7 @@ class Operation(object):
         self.generation = 0
         self.need_logical_replay = None 
         self.reachable_cache = None
+        self.transitive_warning_issued = False
 
     def is_close(self):
         return self.kind == INTER_CLOSE_OP_KIND or self.kind == POST_CLOSE_OP_KIND or \
@@ -4272,9 +4400,9 @@ class Operation(object):
 
     def analyze_logical_requirement(self, index, projecting, 
                                     perform_checks, exact_field=None):
-        # Special out for no access
         assert index in self.reqs
         req = self.reqs[index]
+        # Special out for no access
         if req.priv is NO_ACCESS:
             return True
         # Destination requirements for copies are a little weird because
@@ -4352,12 +4480,20 @@ class Operation(object):
                     return False
         return True
 
+    def analyze_logical_deletion(self, index, perform_checks):
+        assert index in self.reqs
+        req = self.reqs[index]
+        path = list()
+        req.logical_node.compute_path(path, req.parent)
+        assert not not path
+        for field in req.fields:
+            previous_deps = list()
+            if not req.parent.perform_logical_deletion(0, path, self, req, field, 
+                                                       previous_deps, perform_checks):
+                return False
+        return True
+
     def perform_logical_analysis(self, perform_checks):
-        if self.kind == DELETION_OP_KIND and not perform_checks:
-            # TODO: fix this
-            print "WARNING: Legion Spy doesn't really know how to do logical "+\
-                  "analysis for deletion operations at the moment. They might "+\
-                  "look a little weird in the dataflow graphs. Try to ignore them."
         # We need a context to do this
         assert self.context is not None
         # See if there is a fence in place for this context
@@ -4384,6 +4520,12 @@ class Operation(object):
                 # Finally record ourselves as the next fence
                 self.context.current_fence = self
             return True
+        if self.kind == DELETION_OP_KIND:
+            # Perform dependence analysis on the deletion region requirements
+            for idx in self.reqs.iterkeys():
+                if not self.analyze_logical_deletion(idx, perform_checks):
+                    return False
+            return True
         assert not self.need_logical_replay
         projecting = self.kind is INDEX_TASK_KIND
         for idx in self.reqs.iterkeys():
@@ -4405,7 +4547,7 @@ class Operation(object):
                           "implementation bug."
                     if self.state.assert_on_fail:
                         assert False
-                return False
+                    return False
         return True
 
     def has_mapping_dependence(self, req, prev_op, prev_req, dtype, field):
@@ -4439,8 +4581,10 @@ class Operation(object):
         # for groups of open children that are aliased but non-interfering
         # for reductions. The runtime will group them all together while
         # Legion Spy is smart enough to keep them separate.
-        print "INFO: Falling back to transitive mapping dependences for "+str(self)+\
-              " due to either imprecision in the runtime analysis or a bug."
+        if not self.transitive_warning_issued:
+            print "INFO: Falling back to transitive mapping dependences for "+str(self)+\
+                  " due to either imprecision in the runtime analysis or a bug."
+            self.transitive_warning_issued = True
         next_gen = self.state.get_next_traversal_generation()
         self.generation = next_gen
         queue = deque()
@@ -4654,12 +4798,17 @@ class Operation(object):
             dst_req.priv = REDUCE
         else:
             # Normal copy case
-            if dst_inst.is_virtual():
+            if src_inst.is_virtual():
                 error_str = "source field "+str(src_field)+" and destination field "+\
-                            str(dst_field)+" of region requirements "+src(src_index)+\
+                            str(dst_field)+" of region requirements "+str(src_index)+\
                             " and "+str(dst_index)+" of "+str(self)
-                return src_inst.issue_copies_across(dst_inst, depth, dst_field, 
-                              dst_region.logical_node, self, perform_checks, error_str)
+                # Capture a temporary composite instance, but don't register it
+                comp_inst = src_req.logical_node.capture_composite_instance(depth, 
+                                                              src_field, self, src_req)
+                return comp_inst.issue_copies_across(dst=dst_inst, dst_depth=depth, 
+                        dst_field=dst_field, region=dst_req.logical_node, 
+                        op=self, index=dst_index, perform_checks=perform_checks, 
+                        error_str=error_str)
             else:
                 # Normal copy
                 src_preconditions = src_inst.find_use_dependences(depth=depth, 
@@ -4784,6 +4933,9 @@ class Operation(object):
                 if not self.analyze_fill_requirement(depth, index, req,
                                                      perform_checks):
                     return False
+        elif self.kind == DELETION_OP_KIND:
+            # Skip deletions, they only impact logical analysis
+            pass
         else:
             for index,req in self.reqs.iteritems():
                 if not self.analyze_physical_requirement(depth, index, req, 
@@ -6122,11 +6274,11 @@ class CompositeInstance(object):
                     if region.intersects(reduction_region):
                         # Make a reduction copy 
                         reduction = self.state.create_copy(op)
+                        reduction.set_region(region)
                         reduction.add_field(self.field.fid, reduction_inst, 
                                             dst_field.fid, dst, reduction_inst.redop)
-                        reduction.set_region(region)
                         if reduction_region is not region:
-                            reduction.set_intersection(reduction_region)
+                            reduction.set_intersect(reduction_region)
                             src_preconditions = reduction_inst.find_copy_dependences(
                                 depth=self.depth, field=self.field, op=op, index=index,
                                 region=region, reading=True, redop=0,
